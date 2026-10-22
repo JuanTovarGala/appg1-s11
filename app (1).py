@@ -1,119 +1,287 @@
+import os
+import re
+
 import streamlit as st
-import pymongo
+from bson import ObjectId
 from pymongo import MongoClient
-from bson.objectid import ObjectId
 
-# Configuración de página
-st.set_page_config(page_title="CRUD Estudiantes", page_icon="🎓", layout="wide")
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+st.set_page_config(
+    page_title="CRUD de Estudiantes",
+    page_icon="🎓",
+    layout="wide",
+)
 
-# URI de conexión directa a MongoDB Atlas
-MONGO_URI = "mongodb+srv://jltrujillod_db_user:Itb3XsGMXEdF6FkB@numberone.t152kkb.mongodb.net/"
+DB_NAME = "universidad"
+COLLECTION_NAME = "estudiantes"
 
-@st.cache_resource
-def init_connection():
-    return MongoClient(MONGO_URI)
+
+# ============================================================
+# CONEXIÓN SEGURA CON MONGODB ATLAS
+# Define MONGODB_CONNECTION_STRING en Streamlit Cloud → Secrets.
+# No guardes la URI ni la contraseña directamente en este archivo.
+# ============================================================
+@st.cache_resource(show_spinner="Conectando con MongoDB Atlas...")
+def get_mongo_client():
+    # uri = None
+
+    # try:
+    #     uri = st.secrets.get("MONGODB_CONNECTION_STRING")
+    # except Exception:
+    #     pass
+
+    # if not uri:
+    #     uri = os.environ.get("MONGODB_CONNECTION_STRING")
+
+    # if not uri:
+    #     raise ValueError(
+    #         "Falta MONGODB_CONNECTION_STRING. "
+    #         "Configúrala en Streamlit Cloud → Settings → Secrets "
+    #         "o como variable de entorno MONGODB_CONNECTION_STRING."
+    #     )
+
+    # client = MongoClient(uri, serverSelectionTimeoutMS=10000)
+    # client.admin.command("ping")
+    #  Conectarse a MongoDB (por defecto al localhost en el puerto 27017)
+    client = MongoClient('mongodb+srv://daquinonesv_db_user:BED2hp9bUTWZfMSu@clustergrupo2.ckoyg3n.mongodb.net/')
+
+    # Eliminar la base de datos
+    # client.drop_database('universidad')
+
+    #  Seleccionar base de datos (se crea si no existe)
+
+    return client
+
 
 try:
-    client = init_connection()
-    db = client["universidad"]
-    coleccion = db["estudiantes_v2"]
-except Exception as e:
-    st.error(f"Error de conexión: {e}")
+    client = get_mongo_client()
+    db = client['universidad']
+    estudiantes = db['estudiantes']
+except Exception as error:
+    st.error(
+        "No se pudo conectar a MongoDB Atlas. Revisa la URI, "
+        "las credenciales y la configuración de acceso de red."
+    )
+    st.exception(error)
     st.stop()
 
-st.title("🎓 Panel de Control CRUD - Estudiantes")
-st.markdown("Gestión interactiva de la base de datos `universidad` en MongoDB Atlas.")
 
-# Estructura en 2 columnas
-col_izquierda, col_derecha = st.columns([1, 1])
+# ============================================================
+# FUNCIONES AUXILIARES
+# ============================================================
+def validar_correo(correo):
+    return (
+        re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", correo.strip())
+        is not None
+    )
 
-with col_izquierda:
-    st.subheader("⚡ Panel de Operaciones")
 
-    # OPERACIÓN: LEER
-    with st.expander("🔍 Operación: LEER (Read)", expanded=True):
-        buscar_nombre = st.text_input("Nombre a buscar:", key="search_name")
-        btn_leer = st.button("🔍 Buscar / Mostrar Todo")
+def mostrar_documentos(documentos):
+    if not documentos:
+        st.info("No hay estudiantes que mostrar.")
+        return
 
-    # OPERACIÓN: CREAR
-    with st.expander("➕ Operación: CREAR (Create)", expanded=False):
-        nuevo_nombre = st.text_input("Nombre completo:", key="create_name")
-        nueva_edad = st.number_input("Edad:", min_value=1, max_value=120, value=20, key="create_age")
-        nuevo_correo = st.text_input("Correo electrónico:", key="create_email")
-        ciudad = st.text_input("Ciudad:", "Lima", key="create_city")
-        btn_crear = st.button("➕ Registrar Estudiante")
+    for documento in documentos:
+        doc = dict(documento)
+        doc["_id"] = str(doc["_id"])
+        id_corto = doc["_id"][-6:]
+        nombre = doc.get("nombre", "Sin nombre")
 
-    # Cargar lista actualizada de estudiantes para selectboxes
-    estudiantes_lista = list(coleccion.find({}))
-    opciones_dict = {f"{e.get('nombre')} ({e['_id']})": e for e in estudiantes_lista}
+        with st.expander(f"{nombre} · ID ...{id_corto}"):
+            st.json(doc)
 
-    # OPERACIÓN: ACTUALIZAR
-    with st.expander("✏️ Operación: ACTUALIZAR (Update)", expanded=False):
-        if opciones_dict:
-            seleccionado_upd = st.selectbox("Seleccionar estudiante a actualizar:", list(opciones_dict.keys()), key="upd_sel")
-            est_doc = opciones_dict[seleccionado_upd]
-            nueva_edad_upd = st.number_input("Nueva Edad:", value=int(est_doc.get("edad", 20)), key="upd_age")
-            nueva_ciudad_upd = st.text_input("Nueva Ciudad:", value=est_doc.get("direccion", {}).get("ciudad", ""), key="upd_city")
-            btn_update = st.button("✏️ Actualizar Datos")
-        else:
-            st.warning("No hay registros disponibles para actualizar.")
-            btn_update = False
 
-    # OPERACIÓN: ELIMINAR
-    with st.expander("🗑️ Operación: ELIMINAR (Delete)", expanded=False):
-        if opciones_dict:
-            seleccionado_del = st.selectbox("Seleccionar estudiante a eliminar:", list(opciones_dict.keys()), key="del_sel")
-            btn_eliminar = st.button("🗑️ Eliminar Registro", type="primary")
-        else:
-            st.warning("No hay registros disponibles para eliminar.")
-            btn_eliminar = False
+def seleccionar_estudiante(key):
+    documentos = list(estudiantes.find().sort("nombre", 1))
 
-with col_derecha:
-    st.subheader("📊 Resultados y Consulta")
+    if not documentos:
+        st.info("La colección universidad.estudiantes está vacía.")
+        return None, None
 
-    if btn_leer:
-        st.info("Consultando base de datos...")
-        query = {}
-        if buscar_nombre:
-            query["nombre"] = {"$regex": buscar_nombre, "$options": "i"}
-        resultados = list(coleccion.find(query))
-        st.success(f"Se encontraron {len(resultados)} registro(s).")
-        for doc in resultados:
-            st.json({k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()})
+    opciones = {str(doc["_id"]): doc for doc in documentos}
 
-    elif btn_crear:
-        if nuevo_nombre:
-            nuevo_registro = {
-                "nombre": nuevo_nombre,
-                "edad": nueva_edad,
-                "correo": nuevo_correo,
-                "direccion": {"ciudad": ciudad}
-            }
-            res = coleccion.insert_one(nuevo_registro)
-            st.success(f"✅ Estudiante registrado con ID: {res.inserted_id}")
-            st.json(nuevo_registro)
-            st.rerun()
-        else:
-            st.warning("Por favor ingrese al menos el nombre.")
+    id_seleccionado = st.selectbox(
+        "Selecciona un estudiante",
+        options=list(opciones.keys()),
+        format_func=lambda id_texto: (
+            f'{opciones[id_texto].get("nombre", "Sin nombre")} '
+            f'— {opciones[id_texto].get("correo", "Sin correo")} '
+            f'· ID ...{id_texto[-6:]}'
+        ),
+        key=key,
+    )
+    return id_seleccionado, opciones[id_seleccionado]
 
-    elif btn_update and 'seleccionado_upd' in locals():
-        est_doc = opciones_dict[seleccionado_upd]
-        res = coleccion.update_one(
-            {"_id": est_doc["_id"]},
-            {"$set": {"edad": nueva_edad_upd, "direccion.ciudad": nueva_ciudad_upd}}
+
+# ============================================================
+# INTERFAZ CRUD: universidad.estudiantes
+# Campos: nombre, edad, correo, hobbies
+# ============================================================
+st.title("🎓 Gestión de estudiantes")
+st.caption("Base de datos: `universidad` | Colección: `estudiantes`")
+
+crear, buscar, actualizar, borrar = st.tabs(
+    ["➕ Crear", "🔎 Buscar", "✏️ Actualizar", "🗑️ Borrar"]
+)
+
+with crear:
+    st.subheader("Registrar estudiante")
+
+    with st.form("form_crear_estudiante", clear_on_submit=True):
+        nombre = st.text_input("Nombre completo *")
+        edad = st.number_input("Edad", min_value=0, max_value=120, value=20)
+        correo = st.text_input("Correo electrónico *")
+        hobbies_texto = st.text_input(
+            "Hobbies separados por coma",
+            placeholder="Lectura, música, deportes",
         )
-        st.success("✅ Registro actualizado con éxito.")
-        st.rerun()
+        guardar_nuevo = st.form_submit_button(
+            "Guardar estudiante", type="primary"
+        )
 
-    elif btn_eliminar and 'seleccionado_del' in locals():
-        est_doc = opciones_dict[seleccionado_del]
-        res = coleccion.delete_one({"_id": est_doc["_id"]})
-        st.success("✅ Registro eliminado con éxito.")
-        st.rerun()
+    if guardar_nuevo:
+        nombre_limpio = nombre.strip()
+        correo_limpio = correo.strip().lower()
+        hobbies = [h.strip() for h in hobbies_texto.split(",") if h.strip()]
 
+        if not nombre_limpio:
+            st.warning("El nombre es obligatorio.")
+        elif not validar_correo(correo_limpio):
+            st.warning("Escribe un correo electrónico válido.")
+        elif estudiantes.find_one({"correo": correo_limpio}):
+            st.warning("Ya existe un estudiante con ese correo.")
+        else:
+            estudiantes.insert_one(
+                {
+                    "nombre": nombre_limpio,
+                    "edad": int(edad),
+                    "correo": correo_limpio,
+                    "hobbies": hobbies,
+                }
+            )
+            st.success(f"Se registró a {nombre_limpio}.")
+            st.rerun()
+
+with buscar:
+    st.subheader("Consultar estudiantes")
+    modo = st.radio(
+        "Buscar por",
+        ["Todos", "Nombre", "Edad mayor que"],
+        horizontal=True,
+        key="modo_busqueda",
+    )
+
+    if modo == "Nombre":
+        texto = st.text_input("Nombre o parte del nombre", key="buscar_nombre")
+        filtro = (
+            {"nombre": {"$regex": re.escape(texto.strip()), "$options": "i"}}
+            if texto.strip()
+            else {}
+        )
+    elif modo == "Edad mayor que":
+        edad_minima = st.number_input(
+            "Edad mínima (se buscarán edades mayores)",
+            min_value=0,
+            max_value=120,
+            value=18,
+            key="buscar_edad",
+        )
+        filtro = {"edad": {"$gt": int(edad_minima)}}
     else:
-        st.markdown("👉 *Selecciona o ejecuta una acción en el panel izquierdo para interactuar.*")
-        st.markdown("### Vista rápida actual de la base de datos:")
-        actuales = list(coleccion.find({}))
-        for doc in actuales:
-            st.json({k: str(v) if isinstance(v, ObjectId) else v for k, v in doc.items()})
+        filtro = {}
+
+    if st.button("Buscar estudiantes", key="btn_buscar"):
+        mostrar_documentos(list(estudiantes.find(filtro).sort("nombre", 1)))
+
+with actualizar:
+    st.subheader("Actualizar estudiante")
+    id_texto, doc = seleccionar_estudiante("selector_actualizar")
+
+    if doc:
+        hobbies_actuales = doc.get("hobbies", [])
+        if not isinstance(hobbies_actuales, list):
+            hobbies_actuales = []
+
+        try:
+            edad_actual = int(doc.get("edad", 20))
+        except (TypeError, ValueError):
+            edad_actual = 20
+        edad_actual = max(0, min(120, edad_actual))
+
+        with st.form("form_actualizar_estudiante"):
+            nombre_nuevo = st.text_input(
+                "Nombre", value=str(doc.get("nombre", ""))
+            )
+            edad_nueva = st.number_input(
+                "Edad",
+                min_value=0,
+                max_value=120,
+                value=edad_actual,
+            )
+            correo_nuevo = st.text_input(
+                "Correo electrónico", value=str(doc.get("correo", ""))
+            )
+            hobbies_nuevos = st.text_input(
+                "Hobbies separados por coma",
+                value=", ".join(str(h) for h in hobbies_actuales),
+            )
+            guardar_cambios = st.form_submit_button(
+                "Guardar cambios", type="primary"
+            )
+
+        if guardar_cambios:
+            nombre_limpio = nombre_nuevo.strip()
+            correo_limpio = correo_nuevo.strip().lower()
+            hobbies = [
+                h.strip() for h in hobbies_nuevos.split(",") if h.strip()
+            ]
+
+            if not nombre_limpio:
+                st.warning("El nombre es obligatorio.")
+            elif not validar_correo(correo_limpio):
+                st.warning("Escribe un correo electrónico válido.")
+            elif estudiantes.find_one(
+                {
+                    "correo": correo_limpio,
+                    "_id": {"$ne": ObjectId(id_texto)},
+                }
+            ):
+                st.warning("Ese correo ya pertenece a otro estudiante.")
+            else:
+                estudiantes.update_one(
+                    {"_id": ObjectId(id_texto)},
+                    {
+                        "$set": {
+                            "nombre": nombre_limpio,
+                            "edad": int(edad_nueva),
+                            "correo": correo_limpio,
+                            "hobbies": hobbies,
+                        }
+                    },
+                )
+                st.success("Estudiante actualizado.")
+                st.rerun()
+
+with borrar:
+    st.subheader("Eliminar estudiante")
+    id_texto, doc = seleccionar_estudiante("selector_borrar")
+
+    if doc:
+        st.write(f'**Nombre:** {doc.get("nombre", "")}')
+        st.write(f'**Correo:** {doc.get("correo", "")}')
+        confirmar = st.checkbox(
+            "Confirmo que deseo eliminar este estudiante",
+            key=f"confirmar_borrar_{id_texto}",
+        )
+
+        if st.button(
+            "Eliminar estudiante",
+            type="primary",
+            disabled=not confirmar,
+            key="btn_borrar",
+        ):
+            estudiantes.delete_one({"_id": ObjectId(id_texto)})
+            st.success("Estudiante eliminado.")
+            st.rerun()
